@@ -44,6 +44,7 @@
 
 -record(state, {
     servers = [],
+    unresolved_servers = [],
     auth_data = [],
     chroot = "/",
     socket,
@@ -176,18 +177,27 @@ init([ServerList, Timeout, Options]) ->
             Password = <<0:128>>,
             case connect(ShuffledServerList, ProtocolVersion, Zxid, Timeout, SessionId, Password) of
                 {ok, State=#state{host=Host, port=Port, ping_interval=PingIntv}} ->
-                    NewState = State#state{auth_data=AuthData, chroot=Chroot,
-                                           reset_watch=ResetWatch, reconnect_expired=ReconnectExpired,
-                                           monitor=Monitor},
+                    NewState = State#state{
+                        auth_data=AuthData, chroot=Chroot,
+                        reset_watch=ResetWatch, reconnect_expired=ReconnectExpired,
+                        monitor=Monitor
+                        , unresolved_servers = ServerList
+                        },
                     add_init_auths(AuthData, NewState),
                     notify_monitor_server_state(Monitor, connected, Host, Port),
                     {ok, NewState, PingIntv};
                 {error, Reason} ->
                     error_logger:error_msg("Connect failed: ~p, will try again after ~pms~n", [Reason, ?ZK_RECONNECT_INTERVAL]),
                     erlang:send_after(?ZK_RECONNECT_INTERVAL, self(), reconnect),
-                    State = #state{servers=ShuffledServerList, auth_data=AuthData, chroot=Chroot,
-                                   proto_ver=ProtocolVersion, timeout=Timeout, session_id=SessionId, password=Password,
-                                   reset_watch=ResetWatch, reconnect_expired=ReconnectExpired, monitor=Monitor},
+                    State = #state{
+                        servers=ShuffledServerList,
+                        auth_data=AuthData, chroot=Chroot,
+                        proto_ver=ProtocolVersion, timeout=Timeout,
+                        session_id=SessionId, password=Password,
+                        reset_watch=ResetWatch,
+                        reconnect_expired=ReconnectExpired, monitor=Monitor
+                        , unresolved_servers = ServerList
+                    },
                     {ok, State}
             end;
         {error, Reason} ->
@@ -438,53 +448,72 @@ connect([Server={Host,Port}|Left], ProtocolVersion, LastZxidSeen, Timeout, LastS
             connect(Left, ProtocolVersion, LastZxidSeen, Timeout, LastSessionId, LastPassword, [Server|FailedServerList])
     end.
 
-reconnect(State=#state{servers=ServerList, auth_data=AuthData, chroot=Chroot, host=OldHost, port=OldPort,
+%% Compared to the original version, we resolve again the server list
+%% as we may have changes on the ips in a dynamical environment,
+%% especially when using dns names like in dcos, k8s
+reconnect(State=#state{unresolved_servers= UnresolvedServers, auth_data=AuthData, chroot=Chroot, host=OldHost, port=OldPort,
                        proto_ver=ProtoVer, zxid=Zxid, timeout=Timeout, session_id=SessionId, password=Passwd,
                        xid=Xid, reset_watch=ResetWatch, reconnect_expired=ReconnectExpired,
                        monitor=Monitor, watchers=Watchers}) ->
-    case connect(ServerList, ProtoVer, Zxid, Timeout, SessionId, Passwd) of
-        {ok, NewState=#state{host=Host, port=Port, ping_interval=PingIntv, heartbeat_watcher=HeartbeatWatcher}} ->
-            error_logger:warning_msg("Reconnect to ~p:~p successful~n", [Host, Port]),
-            RenewState = NewState#state{auth_data=AuthData, chroot=Chroot, xid=Xid, zxid=Zxid,
-                                        reset_watch=ResetWatch, reconnect_expired=ReconnectExpired,
-                                        monitor=Monitor, heartbeat_watcher=HeartbeatWatcher, watchers=Watchers},
-            RenewState2 = case {Host, Port} of
-                {OldHost, OldPort} -> RenewState;
-                _ -> reset_watch_return_new_state(RenewState, Watchers)
-            end,
-            notify_monitor_server_state(Monitor, connected, Host, Port),
-            {noreply, RenewState2, PingIntv};
-        {error, {session_expired, Host, Port}} ->
-            notify_monitor_server_state(Monitor, expired, Host, Port),
-            case ReconnectExpired of
-                true ->
-                    error_logger:warning_msg("Session expired, creating new connection now"),
-                    reconnect_after_session_expired(State);
-                false ->
-                    error_logger:warning_msg("Session expired, will not reconnect"),
+    case resolve_servers(UnresolvedServers) of
+        {ok, []} ->
+            {stop, no_servers};
+        {ok, ServerList} ->
+            case connect(ServerList, ProtoVer, Zxid, Timeout, SessionId, Passwd) of
+                {ok, NewState=#state{host=Host, port=Port, ping_interval=PingIntv, heartbeat_watcher=HeartbeatWatcher}} ->
+                    error_logger:warning_msg("Reconnect to ~p:~p successful~n", [Host, Port]),
+                    RenewState = NewState#state{auth_data=AuthData, chroot=Chroot, xid=Xid, zxid=Zxid,
+                        reset_watch=ResetWatch, reconnect_expired=ReconnectExpired,
+                        monitor=Monitor, heartbeat_watcher=HeartbeatWatcher, watchers=Watchers},
+                    RenewState2 = case {Host, Port} of
+                                      {OldHost, OldPort} -> RenewState;
+                                      _ -> reset_watch_return_new_state(RenewState, Watchers)
+                                  end,
+                    notify_monitor_server_state(Monitor, connected, Host, Port),
+                    {noreply, RenewState2, PingIntv};
+                {error, {session_expired, Host, Port}} ->
+                    notify_monitor_server_state(Monitor, expired, Host, Port),
+                    case ReconnectExpired of
+                        true ->
+                            error_logger:warning_msg("Session expired, creating new connection now"),
+                            reconnect_after_session_expired(State);
+                        false ->
+                            error_logger:warning_msg("Session expired, will not reconnect"),
+                            {noreply, State}
+                    end;
+                {error, Reason} ->
+                    error_logger:error_msg("Connect fail: ~p, will be try again after ~pms~n", [Reason, ?ZK_RECONNECT_INTERVAL]),
+                    erlang:send_after(?ZK_RECONNECT_INTERVAL, self(), reconnect),
                     {noreply, State}
             end;
         {error, Reason} ->
-            error_logger:error_msg("Connect fail: ~p, will be try again after ~pms~n", [Reason, ?ZK_RECONNECT_INTERVAL]),
-            erlang:send_after(?ZK_RECONNECT_INTERVAL, self(), reconnect),
-            {noreply, State}
+            {stop, Reason}
     end.
 
-reconnect_after_session_expired(State=#state{servers=ServerList, auth_data=AuthData, chroot=Chroot,
-                                             timeout=Timeout, reset_watch=ResetWatch, monitor=Monitor, watchers=Watchers}) ->
-    case connect(ServerList, 0, 0, Timeout, 0, <<0:128>>) of
-        {ok, NewState=#state{host=Host, port=Port, ping_interval=PingIntv, heartbeat_watcher=HeartbeatWatcher}} ->
-            error_logger:warning_msg("Creating a new connection to ~p:~p successful~n", [Host, Port]),
-            RenewState = reset_watch_return_new_state(NewState#state{auth_data=AuthData, chroot=Chroot,
-                                                                     reset_watch=ResetWatch, monitor=Monitor,
-                                                                     heartbeat_watcher=HeartbeatWatcher}, Watchers),
-            add_init_auths(AuthData, RenewState),
-            notify_monitor_server_state(Monitor, connected, Host, Port),
-            {noreply, RenewState, PingIntv};
+reconnect_after_session_expired(State=#state{
+    unresolved_servers= UnresolvedServers,
+    auth_data=AuthData, chroot=Chroot,
+    timeout=Timeout, reset_watch=ResetWatch,
+    monitor=Monitor, watchers=Watchers}) ->
+    case resolve_servers(UnresolvedServers) of
+        {ok, []} -> {stop, no_servers};
+        {ok, ServerList} ->
+            case connect(ServerList, 0, 0, Timeout, 0, <<0:128>>) of
+                {ok, NewState=#state{host=Host, port=Port, ping_interval=PingIntv, heartbeat_watcher=HeartbeatWatcher}} ->
+                    error_logger:warning_msg("Creating a new connection to ~p:~p successful~n", [Host, Port]),
+                    RenewState = reset_watch_return_new_state(NewState#state{auth_data=AuthData, chroot=Chroot,
+                        reset_watch=ResetWatch, monitor=Monitor,
+                        heartbeat_watcher=HeartbeatWatcher}, Watchers),
+                    add_init_auths(AuthData, RenewState),
+                    notify_monitor_server_state(Monitor, connected, Host, Port),
+                    {noreply, RenewState, PingIntv};
+                {error, Reason} ->
+                    error_logger:error_msg("Connect failed: ~p, will try again after ~pms~n", [Reason, ?ZK_RECONNECT_INTERVAL]),
+                    erlang:send_after(?ZK_RECONNECT_INTERVAL, self(), reconnect),
+                    {noreply, State}
+            end;
         {error, Reason} ->
-            error_logger:error_msg("Connect failed: ~p, will try again after ~pms~n", [Reason, ?ZK_RECONNECT_INTERVAL]),
-            erlang:send_after(?ZK_RECONNECT_INTERVAL, self(), reconnect),
-            {noreply, State}
+            {stop, Reason}
     end.
 
 op_call(Pid, Message) ->
