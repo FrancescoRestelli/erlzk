@@ -25,7 +25,7 @@ start_conn(Args) ->
   start_conn(temporary, Args).
 
 start_conn(Type, Args) ->
-  io:format("[~p]STARTING CONNECTION: ~p~n", [Type, Args]),
+%%  io:format("[~p]STARTING CONNECTION: ~p~n", [Type, Args]),
   supervisor:start_child(?SUPERVISOR, #{
     id => erlzk_conn,
     start => {erlzk_conn, start_link, Args},
