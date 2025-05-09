@@ -165,8 +165,6 @@ init([ServerList, Timeout, Options]) ->
     end,
     process_flag(trap_exit, true),
     case resolve_servers(ServerList) of
-        {ok, []} ->
-            {stop, no_servers};
         {ok, ResolvedServerList} ->
             DedupedServerList = lists:usort(ResolvedServerList),
             ShuffledServerList = shuffle(DedupedServerList),
@@ -458,8 +456,6 @@ reconnect(State=#state{unresolved_servers= UnresolvedServers, auth_data=AuthData
                        xid=Xid, reset_watch=ResetWatch, reconnect_expired=ReconnectExpired,
                        monitor=Monitor, watchers=Watchers}) ->
     case resolve_servers(UnresolvedServers) of
-        {ok, []} ->
-            {stop, no_servers, State};
         {ok, ServerList} ->
             case connect(ServerList, ProtoVer, Zxid, Timeout, SessionId, Passwd) of
                 {ok, NewState=#state{host=Host, port=Port, ping_interval=PingIntv, heartbeat_watcher=HeartbeatWatcher}} ->
@@ -506,7 +502,6 @@ reconnect_after_session_expired(State=#state{
     timeout=Timeout, reset_watch=ResetWatch,
     monitor=Monitor, watchers=Watchers}) ->
     case resolve_servers(UnresolvedServers) of
-        {ok, []} -> {stop, no_servers, State};
         {ok, ServerList} ->
             case connect(ServerList, 0, 0, Timeout, 0, <<0:128>>) of
                 {ok, NewState=#state{host=Host, port=Port, ping_interval=PingIntv, heartbeat_watcher=HeartbeatWatcher}} ->

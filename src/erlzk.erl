@@ -69,7 +69,8 @@ connect(ServerList, Timeout) ->
              ({local, Name::atom()} | {global, GlobalName::term()} | {via, Module::atom(), ViaName::term()},
               server_list(), pos_integer()) -> {ok, pid()} | {error, atom()}.
 connect(ServerList, Timeout, Options) when is_list(Options) ->
-    erlzk_conn_sup:start_conn([ServerList, Timeout, Options]);
+    ConnectionType = proplists:get_value(connection_type, Options, temporary),
+    erlzk_conn_sup:start_conn(ConnectionType, [ServerList, Timeout, Options]);
 connect(ServerName, ServerList, Timeout) when is_integer(Timeout) ->
     connect(ServerName, ServerList, Timeout, []).
 
@@ -89,7 +90,8 @@ connect(ServerName, ServerList, Timeout) when is_integer(Timeout) ->
 -spec connect({local, Name::atom()} | {global, GlobalName::term()} | {via, Module::atom(), ViaName::term()},
               server_list(), pos_integer(), options()) -> {ok, pid()} | {error, atom()}.
 connect(ServerName, ServerList, Timeout, Options) ->
-    erlzk_conn_sup:start_conn([ServerName, ServerList, Timeout, Options]).
+    ConnectionType = proplists:get_value(connection_type, Options, temporary),
+    erlzk_conn_sup:start_conn(ConnectionType, [ServerName, ServerList, Timeout, Options]).
 
 %% @doc Cause the session to terminate while retaining connection.
 %%  (useful when testing session restart behaviour).

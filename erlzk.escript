@@ -30,10 +30,15 @@ start_zookeeper(Nodes) ->
         end
     end, Nodes),
 %     io:format("~p", [erlzk:module_info()]),
-    {ok, Pid} = erlzk:connect(ParsedHosts, 3000, [{monitor, self()}]),
-    io:format("Connected to ZooKeeper nodes: ~p~n", [Nodes]),
-    erlzk:exists(Pid, "/", self()),
-    wait_forever().
+    case erlzk:connect(ParsedHosts, 3000, [{monitor, self()}]) of
+        {ok, Pid} ->
+            io:format("Connected to ZooKeeper nodes: ~p~n", [Nodes]),
+            erlzk:exists(Pid, "/", self()),
+            wait_forever();
+       {error, Reason} ->
+            io:format("Failed to connect to ZooKeeper nodes: ~p, reason: ~p~n", [Nodes, Reason]),
+            exit(-1)
+    end.
 
 
 wait_forever() ->

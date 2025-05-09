@@ -15,22 +15,32 @@
 -module(erlzk_conn_sup).
 -behaviour(supervisor).
 
--export([start_conn/1]).
+-export([start_conn/1, start_conn/2]).
 -export([start_link/0]).
 -export([init/1]).
 
 -define(SUPERVISOR, ?MODULE).
 
 start_conn(Args) ->
-    supervisor:start_child(?SUPERVISOR, Args).
+  start_conn(temporary, Args).
+
+start_conn(Type, Args) ->
+  io:format("[~p]STARTING CONNECTION: ~p~n", [Type, Args]),
+  supervisor:start_child(?SUPERVISOR, #{
+    id => erlzk_conn,
+    start => {erlzk_conn, start_link, Args},
+    restart => Type,
+    shutdown => 5000,
+    type => worker,
+    modules => [erlzk_conn]
+  }).
 
 start_link() ->
-    supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
+  supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
 
 init([]) ->
-    {ok, {{simple_one_for_one, 5, 5}, [{erlzk_conn,
-                                        {erlzk_conn, start_link, []},
-                                        temporary,
-                                        5000,
-                                        worker,
-                                        [erlzk_conn]}]}}.
+  {ok, {#{
+    strategy => one_for_one,
+    intensity => 10,
+    period => 5
+  }, []}}.
