@@ -327,6 +327,7 @@ handle_info({tcp_closed, Socket}, State=#state{socket=Socket, host=Host, port=Po
     stop_heartbeat(HeartbeatWatcher),
     notify_monitor_server_state(Monitor, disconnected, Host, Port),
     State1 = notify_callers_closed(State),
+%%    error_logger:error_msg("State0: ~p~nState1: ~p~n",[State, State1]),
     reconnect(State1#state{socket=undefined, heartbeat_watcher=undefined});
 handle_info({tcp_error, Socket, Reason}, State=#state{socket=Socket, host=Host, port=Port, monitor=Monitor, heartbeat_watcher=HeartbeatWatcher}) ->
     error_logger:error_msg("Connection to ~p:~p encountered an error, will close and reconnect: ~p~n", [Host, Port, Reason]),
@@ -334,6 +335,7 @@ handle_info({tcp_error, Socket, Reason}, State=#state{socket=Socket, host=Host, 
     stop_heartbeat(HeartbeatWatcher),
     notify_monitor_server_state(Monitor, disconnected, Host, Port),
     State1 = notify_callers_closed(State),
+%%    error_logger:error_msg("State0: ~p~nState1: ~p~n",[State, State1]),
     reconnect(State1#state{socket=undefined, heartbeat_watcher=undefined});
 handle_info(reconnect, State) ->
     reconnect(State);
@@ -457,14 +459,22 @@ reconnect(State=#state{unresolved_servers= UnresolvedServers, auth_data=AuthData
                        monitor=Monitor, watchers=Watchers}) ->
     case resolve_servers(UnresolvedServers) of
         {ok, []} ->
-            {stop, no_servers};
+            {stop, no_servers, State};
         {ok, ServerList} ->
             case connect(ServerList, ProtoVer, Zxid, Timeout, SessionId, Passwd) of
                 {ok, NewState=#state{host=Host, port=Port, ping_interval=PingIntv, heartbeat_watcher=HeartbeatWatcher}} ->
                     error_logger:warning_msg("Reconnect to ~p:~p successful~n", [Host, Port]),
-                    RenewState = NewState#state{auth_data=AuthData, chroot=Chroot, xid=Xid, zxid=Zxid,
-                        reset_watch=ResetWatch, reconnect_expired=ReconnectExpired,
-                        monitor=Monitor, heartbeat_watcher=HeartbeatWatcher, watchers=Watchers},
+                    RenewState = NewState#state{
+                        auth_data=AuthData,
+                        chroot=Chroot,
+                        xid=Xid, zxid=Zxid,
+                        reset_watch=ResetWatch,
+                        reconnect_expired=ReconnectExpired,
+                        monitor=Monitor,
+                        heartbeat_watcher=HeartbeatWatcher,
+                        watchers=Watchers
+                        , unresolved_servers = UnresolvedServers
+                    },
                     RenewState2 = case {Host, Port} of
                                       {OldHost, OldPort} -> RenewState;
                                       _ -> reset_watch_return_new_state(RenewState, Watchers)
@@ -496,14 +506,19 @@ reconnect_after_session_expired(State=#state{
     timeout=Timeout, reset_watch=ResetWatch,
     monitor=Monitor, watchers=Watchers}) ->
     case resolve_servers(UnresolvedServers) of
-        {ok, []} -> {stop, no_servers};
+        {ok, []} -> {stop, no_servers, State};
         {ok, ServerList} ->
             case connect(ServerList, 0, 0, Timeout, 0, <<0:128>>) of
                 {ok, NewState=#state{host=Host, port=Port, ping_interval=PingIntv, heartbeat_watcher=HeartbeatWatcher}} ->
                     error_logger:warning_msg("Creating a new connection to ~p:~p successful~n", [Host, Port]),
-                    RenewState = reset_watch_return_new_state(NewState#state{auth_data=AuthData, chroot=Chroot,
-                        reset_watch=ResetWatch, monitor=Monitor,
-                        heartbeat_watcher=HeartbeatWatcher}, Watchers),
+                    RenewState = reset_watch_return_new_state(NewState#state{
+                        auth_data=AuthData,
+                        chroot=Chroot,
+                        reset_watch=ResetWatch,
+                        monitor=Monitor,
+                        heartbeat_watcher=HeartbeatWatcher
+                        , unresolved_servers = UnresolvedServers
+                    }, Watchers),
                     add_init_auths(AuthData, RenewState),
                     notify_monitor_server_state(Monitor, connected, Host, Port),
                     {noreply, RenewState, PingIntv};
